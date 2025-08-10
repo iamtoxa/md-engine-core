@@ -1,0 +1,29 @@
+{
+  "name": "@iamtoxa/md-engine-utils",
+  "version": "0.0.0",
+  "description": "Shared utilities for md-engine.",
+  "license": "Apache-2.0",
+  "author": "iamtoxa",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rimraf dist || rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

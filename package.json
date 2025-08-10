@@ -1,0 +1,46 @@
+{
+  "name": "@iamtoxa/md-engine-core",
+  "private": true,
+  "version": "0.0.0",
+  "description": "High-performance multiplayer game server core (Bun + TypeScript, ECS, SAB).",
+  "license": "Apache-2.0",
+  "author": "iamtoxa",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iamtoxa/md-engine-core"
+  },
+  "homepage": "https://github.com/iamtoxa/md-engine-core",
+  "bugs": {
+    "url": "https://github.com/iamtoxa/md-engine-core/issues"
+  },
+  "packageManager": "bun@1.2.19",
+  "engines": {
+    "bun": ">=1.2.19"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "tools/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "gen:protocol": "bun run tools/protocol/scripts/gen.ts",
+    "dev": "bun run apps/server/src/index.ts",
+    "prepare": "lefthook install || bunx lefthook install || true",
+    "format": "biome format --write .",
+    "format:check": "biome format --check .",
+    "lint": "biome lint .",
+    "check": "biome check .",
+    "typecheck": "tsc -p tsconfig.base.json --noEmit",
+    "build": "tsc -b tsconfig.build.json",
+    "clean": "tsc -b tsconfig.build.json --clean",
+    "test": "bun run build && bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.4",
+    "@types/bun": "^1.2.19",
+    "@types/jest": "^30.0.0",
+    "lefthook": "^1.12.2",
+    "typescript": "^5.9.2"
+  }
+}

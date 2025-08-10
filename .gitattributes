@@ -1,0 +1,32 @@
+text=auto eol=lf
+
+#Маркдаун и тексты
+
+*.md text
+*.fbs text
+*.ts text
+*.tsx text
+*.js text
+*.json text
+*.yml text
+*.yaml text
+*.toml text
+
+
+#Бинарные
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.svg text
+*.ico binary
+*.pdf binary
+*.lockb binary
+
+
+#Ускорение diff для больших файлов
+
+*.min.js -diff
+*.min.css -diff

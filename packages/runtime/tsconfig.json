@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../ecs-core" },
+    { "path": "../net" },
+    { "path": "../utils" },
+    { "path": "../game-kit" },
+    { "path": "../data" }
+  ],
+  "include": ["src"]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "@iamtoxa/md-engine-net",
+  "version": "0.0.0",
+  "description": "Сетевые примитивы (протокол, IPC) для md-engine.",
+  "license": "Apache-2.0",
+  "author": "iamtoxa",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rimraf dist || rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "@iamtoxa/md-engine-utils": "workspace:*",
+    "flatbuffers": "^23.5.26"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

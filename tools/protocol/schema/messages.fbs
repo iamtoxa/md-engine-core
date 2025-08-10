@@ -1,0 +1,129 @@
+// file_identifier: MDE0
+// namespace: MDE
+// Envelope + базы протокола (3D), минимальный набор для M1.
+
+
+namespace MDE;
+
+
+file_identifier "MDE0";
+
+
+// Базовые 3D-типы
+struct Vec3f {
+x:float;
+y:float;
+z:float;
+}
+
+
+struct Quatf {
+x:float;
+y:float;
+z:float;
+w:float;
+}
+
+
+// Транспортный идентификатор сущности (64 бита как два u32)
+struct EntityId {
+id_lo:uint32;
+gen_hi:uint32;
+}
+
+
+// Сообщения
+
+
+table Ping {
+client_time_ms:uint64;
+}
+
+
+table Pong {
+server_time_ms:uint64;
+echo_client_time_ms:uint64;
+}
+
+
+table ClientHello {
+client_version:string;
+protocol_major:uint16;
+protocol_minor:uint16;
+capabilities:uint32;
+}
+
+
+table ServerHello {
+server_version:string;
+protocol_major:uint16;
+protocol_minor:uint16;
+world_id:uint32;
+tick_rate:uint16;
+time_ms:uint64;
+}
+
+
+table ClientInput {
+seq:uint32;
+client_tick:uint32;
+move:Vec3f;         // намерение движения (xyz, -1..1)
+view_dir:Vec3f;     // нормализованное направление взгляда
+buttons:uint32;     // битовая маска кнопок
+analog1:float;      // произвольная аналоговая ось/триггер
+analog2:float;
+}
+
+
+// Расширенный снапшот сущности
+// mask bit0=Transform, bit1=Velocity, bit2=Health, bit3=Owner
+table EntitySnapshot {
+id:EntityId;
+mask:uint32;
+pos:Vec3f;
+rot:Quatf;
+vel:Vec3f;
+hp:uint32;
+owner:uint32;
+}
+
+table ServerSnapshot {
+full:bool;                     // полный снапшот или дельта (для M2)
+server_tick:uint32;
+last_input_seq_acked:uint32;
+entities:[EntitySnapshot];     // видимые/изменённые
+removed:[EntityId];            // удалённые из AOI клиента
+}
+
+
+table Error {
+code:uint16;
+message:string;
+}
+
+
+// Envelope
+union Body {
+Ping,
+Pong,
+ClientHello,
+ServerHello,
+ClientInput,
+ServerInfo,
+ServerSnapshot,
+Error
+}
+
+
+table Envelope {
+seq:uint32;            // номер сообщения (клиент/сервер отдельно)
+sent_at_ms:uint64;     // отправительское время (для синхронизации)
+body:Body;             // полезная нагрузка
+}
+
+// Новое: краткое уведомление о смене зоны/мира
+table ServerInfo {
+world_id:uint32;
+}
+
+root_type Envelope;

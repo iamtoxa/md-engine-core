@@ -1,0 +1,28 @@
+{
+    "$schema": "https://biomejs.dev/schemas/1.8.3/schema.json",
+    "formatter": {
+        "indentStyle": "space",
+        "indentSize": 2,
+        "lineWidth": 100
+    },
+    "linter": {
+        "rules": {
+            "recommended": true
+        }
+    },
+    "javascript": {
+        "formatter": {
+            "quoteStyle": "double",
+            "semicolons": "asNeeded"
+        }
+    },
+    "files": {
+        "ignore": [
+            "dist",
+            "build",
+            "coverage",
+            "docs/build",
+            "docs/.docusaurus"
+        ]
+    }
+}

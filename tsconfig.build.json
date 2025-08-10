@@ -1,0 +1,12 @@
+{
+    "files": [],
+    "references": [
+        { "path": "packages/utils" },
+        { "path": "packages/ecs-core" },
+        { "path": "packages/net" },
+        { "path": "packages/game-kit" },
+        { "path": "packages/data" },
+        { "path": "packages/runtime" },
+        { "path": "apps/server" }
+    ]
+}

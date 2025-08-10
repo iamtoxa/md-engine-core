@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+node_modules
+dist
+build
+coverage
+.tmp
+temp
+tmp
+.env
+.env.*
+docs/build
+docs/.docusaurus
+.vscode
+.idea
+*.log

@@ -1,0 +1,15 @@
+{
+  "name": "@iamtoxa/md-engine-tools-protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Инструменты протокола (FlatBuffers) для md-engine.",
+  "license": "Apache-2.0",
+  "author": "iamtoxa",
+  "type": "module",
+  "scripts": {
+    "gen": "bun run scripts/gen.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
