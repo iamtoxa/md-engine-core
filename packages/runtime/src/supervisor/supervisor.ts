@@ -8,7 +8,6 @@ import {
   type RequestMigrateMessage,
 } from "../types/control.js";
 import { ZoneManager } from "../zone/zone_manager.js";
-import type { ZoneInfo } from "../zone/types.js";
 import { PROTOCOL_MAJOR, PROTOCOL_MINOR } from "@iamtoxa/md-engine-net";
 import { SERVER_VERSION } from "../version.js";
 
@@ -21,7 +20,7 @@ type WorkerHandle = {
   restarts: number[];
   backoffStep: number;
   state: "starting" | "ready" | "stopped";
-  port?: number; // для gateway
+  port?: number;
 };
 
 const backoffMs = [500, 1000, 2000, 4000, 8000];
@@ -62,18 +61,10 @@ export class Supervisor {
 
     // Gateway'и (порты base+index)
     const gwCount = Math.max(1, this.cfg.workers.gatewayWorkers);
-    for (let i = 0; i < gwCount; i++) {
-      await this.spawn("gateway", i);
-    }
-    // Миры (по зонам)
-    for (let i = 0; i < zones.length; i++) {
-      await this.spawn("world", i);
-    }
-    // Job-работники (если нужны)
+    for (let i = 0; i < gwCount; i++) await this.spawn("gateway", i);
+    for (let i = 0; i < zones.length; i++) await this.spawn("world", i);
     const jobCount = Math.max(0, this.cfg.workers.jobWorkers);
-    for (let i = 0; i < jobCount; i++) {
-      await this.spawn("job", i);
-    }
+    for (let i = 0; i < jobCount; i++) await this.spawn("job", i);
 
     this.hbTimer = setInterval(
       () => this.checkHeartbeats(),
@@ -82,17 +73,11 @@ export class Supervisor {
 
     this.log.info("started", {
       workers: { gateway: gwCount, world: zones.length, job: jobCount },
-      zones: zones.map((z) => ({
-        id: z.id,
-        worldIndex: z.worldIndex,
-        bounds: z.bounds,
-      })),
     });
   }
 
   async stop() {
     this.stopping = true;
-    this.log.info("stopping");
     if (this.hbTimer != null) clearInterval(this.hbTimer);
     const shutdownMsg: FromSupervisor = { type: "shutdown" };
     for (const h of this.handles) {
@@ -100,7 +85,6 @@ export class Supervisor {
         h.worker.postMessage(shutdownMsg);
       } catch {}
     }
-    // небольшая задержка для graceful
     await new Promise((r) => setTimeout(r, 500));
     for (const h of this.handles) {
       try {
@@ -108,7 +92,6 @@ export class Supervisor {
       } catch {}
     }
     this.handles = [];
-    this.log.info("stopped");
   }
 
   private nodeId() {
@@ -138,12 +121,10 @@ export class Supervisor {
         protocolMajor: PROTOCOL_MAJOR,
         protocolMinor: PROTOCOL_MINOR,
         tickRate: this.cfg.simulation.simulationHz,
-
         env: this.cfg.env,
         corsOrigins: this.cfg.server.corsOrigins,
         trustProxy: this.cfg.server.trustProxy,
         worldCount: Math.max(1, this.cfg.workers.worldWorkers),
-
         ipc: {
           inputBytes: this.cfg.ipc.clientInputSabBytes,
           outputBytes: this.cfg.ipc.clientOutputSabBytes,
@@ -162,6 +143,7 @@ export class Supervisor {
           secret: this.cfg.auth.jwt.secret,
         },
         flagsPath: this.cfg.flags.path,
+        modules: this.cfg.modules, // <— проброс модулей
       };
       return { conf, port };
     }
@@ -174,10 +156,11 @@ export class Supervisor {
         snapshot: this.cfg.snapshot,
         bounds: z.bounds,
         logs: this.cfg.logs,
+        modules: this.cfg.modules, // <— проброс модулей
       };
       return { conf };
     }
-    const conf = { logs: this.cfg.logs };
+    const conf = { logs: this.cfg.logs, modules: this.cfg.modules };
     return { conf };
   }
 
@@ -196,20 +179,16 @@ export class Supervisor {
     };
     const { conf, port } = this.makeConfigFor(type, index);
     if (port) handle.port = port;
-
     const onMessage = (ev: MessageEvent<ToSupervisor>) => {
-      const msg = ev.data;
-      // ready
+      const msg = ev.data as any;
       if (
         msg.type === "ready" &&
         msg.workerType === type &&
         msg.index === index
       ) {
         handle.state = "ready";
-        this.log.info("worker ready", { type, index, port: handle.port });
         return;
       }
-      // heartbeat
       if (
         msg.type === "heartbeat" &&
         msg.workerType === type &&
@@ -218,70 +197,48 @@ export class Supervisor {
         handle.lastHeartbeatAt = Date.now();
         return;
       }
-      // gateway -> client_open
-      if (
-        (msg as any).type === "client_open" &&
-        (msg as any).workerType === "gateway"
-      ) {
-        const m = msg as any as import("../types/control.js").ClientOpenMessage;
-        // сохранить маршрут клиента
-        this.clientMap.set(m.clientId, {
-          gatewayIndex: m.index,
-          worldIndex: m.worldIndex,
-          inputSab: m.inputSab,
-          outputSab: m.outputSab,
+      if (msg.type === "client_open" && msg.workerType === "gateway") {
+        this.clientMap.set(msg.clientId, {
+          gatewayIndex: msg.index,
+          worldIndex: msg.worldIndex,
+          inputSab: msg.inputSab,
+          outputSab: msg.outputSab,
         });
-        // форвард attach в соответствующий мир
         const worldHandle = this.handles.find(
-          (h) => h.type === "world" && h.index === m.worldIndex
-        );
-        if (!worldHandle) {
-          this.log.warn("no world for client", {
-            clientId: m.clientId,
-            worldIndex: m.worldIndex,
-          });
-          return;
-        }
-        const attach: ClientAttachMessage = {
-          type: "client_attach",
-          clientId: m.clientId,
-          fromGateway: { index: m.index },
-          inputSab: m.inputSab,
-          outputSab: m.outputSab,
-        };
-        worldHandle.worker.postMessage(attach);
-        return;
-      }
-      // gateway -> client_close
-      if (
-        (msg as any).type === "client_close" &&
-        (msg as any).workerType === "gateway"
-      ) {
-        const m =
-          msg as any as import("../types/control.js").ClientCloseMessage;
-        const entry = this.clientMap.get(m.clientId);
-        if (entry) this.clientMap.delete(m.clientId);
-        const worldHandle = this.handles.find(
-          (h) => h.type === "world" && h.index === m.worldIndex
+          (h) => h.type === "world" && h.index === msg.worldIndex
         );
         if (worldHandle) {
-          const detach = {
-            type: "client_detach",
-            clientId: m.clientId,
-          } as FromSupervisor;
-          worldHandle.worker.postMessage(detach);
+          const attach: FromSupervisor = {
+            type: "client_attach",
+            clientId: msg.clientId,
+            fromGateway: { index: msg.index },
+            inputSab: msg.inputSab,
+            outputSab: msg.outputSab,
+          };
+          worldHandle.worker.postMessage(attach);
         }
         return;
       }
-      // world -> request_migrate
-      if ((msg as any).type === "request_migrate") {
-        const rm = msg as any as RequestMigrateMessage;
-        this.handleLocalMigration(rm).catch((err) => {
+      if (msg.type === "client_close" && msg.workerType === "gateway") {
+        const entry = this.clientMap.get(msg.clientId);
+        if (entry) this.clientMap.delete(msg.clientId);
+        const worldHandle = this.handles.find(
+          (h) => h.type === "world" && h.index === msg.worldIndex
+        );
+        if (worldHandle)
+          worldHandle.worker.postMessage({
+            type: "client_detach",
+            clientId: msg.clientId,
+          } as FromSupervisor);
+        return;
+      }
+      if (msg.type === "request_migrate") {
+        this.handleLocalMigration(msg).catch((err) =>
           this.log.error("migration failed", {
-            clientId: rm.clientId,
+            clientId: msg.clientId,
             error: String(err),
-          });
-        });
+          })
+        );
         return;
       }
     };
@@ -289,11 +246,6 @@ export class Supervisor {
     w.onmessage = onMessage;
     // @ts-ignore
     w.onerror = (err: any) => {
-      this.log.error("worker error", {
-        type,
-        index,
-        error: String(err?.message ?? err),
-      });
       this.scheduleRestart(handle);
     };
 
@@ -304,7 +256,6 @@ export class Supervisor {
       config: conf,
     };
     w.postMessage(initMsg);
-
     this.handles.push(handle);
   }
 
@@ -315,16 +266,10 @@ export class Supervisor {
     h.restarts.push(now);
     const backoff = backoffMs[Math.min(backoffMs.length - 1, h.backoffStep)];
     h.backoffStep = Math.min(h.backoffStep + 1, backoffMs.length - 1);
-    this.log.warn("schedule restart", {
-      type: h.type,
-      index: h.index,
-      backoff,
-    });
     setTimeout(async () => {
       try {
         h.worker.terminate();
       } catch {}
-      // убрать старый handle
       this.handles = this.handles.filter(
         (x) => !(x.type === h.type && x.index === h.index)
       );
@@ -335,18 +280,10 @@ export class Supervisor {
   private checkHeartbeats() {
     const now = Date.now();
     for (const h of this.handles) {
-      if (now - h.lastHeartbeatAt > heartbeatTimeoutMs) {
-        this.log.warn("heartbeat missed -> restart", {
-          type: h.type,
-          index: h.index,
-          lastMsAgo: now - h.lastHeartbeatAt,
-        });
-        this.scheduleRestart(h);
-      }
+      if (now - h.lastHeartbeatAt > heartbeatTimeoutMs) this.scheduleRestart(h);
     }
   }
 
-  // Локальная миграция между мирами (в пределах одного узла/процесса)
   private async handleLocalMigration(rm: RequestMigrateMessage) {
     const fromWorld = this.handles.find(
       (h) => h.type === "world" && h.index === rm.fromWorld
@@ -355,20 +292,11 @@ export class Supervisor {
       (h) => h.type === "world" && h.index === rm.targetWorld
     );
     const entry = this.clientMap.get(rm.clientId);
-    if (!fromWorld || !toWorld || !entry) {
-      this.log.warn("migration invalid", {
-        clientId: rm.clientId,
-        fromWorld: rm.fromWorld,
-        targetWorld: rm.targetWorld,
-      });
-      return;
-    }
-    // 1) Отвязать от старого мира
+    if (!fromWorld || !toWorld || !entry) return;
     fromWorld.worker.postMessage({
       type: "client_detach",
       clientId: rm.clientId,
     } as FromSupervisor);
-    // 2) Привязать к новому миру с начальными данными
     const attach: import("../types/control.js").ClientAttachWithStateMessage = {
       type: "client_attach_with_state",
       clientId: rm.clientId,
@@ -379,10 +307,8 @@ export class Supervisor {
       state: rm.state,
     };
     toWorld.worker.postMessage(attach);
-    // 3) Обновить маршрут
     entry.worldIndex = rm.targetWorld;
     this.clientMap.set(rm.clientId, entry);
-    // 4) Уведомить gateway → отправить ServerInfo(world_id)
     const gw = this.handles.find(
       (h) => h.type === "gateway" && h.index === entry.gatewayIndex
     );

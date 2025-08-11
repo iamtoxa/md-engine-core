@@ -8,6 +8,7 @@ export type EnvelopeDecoded =
   | { bodyType: "ClientHello"; env: MDE.Envelope; body: MDE.ClientHello }
   | { bodyType: "ServerHello"; env: MDE.Envelope; body: MDE.ServerHello }
   | { bodyType: "ClientInput"; env: MDE.Envelope; body: MDE.ClientInput }
+  | { bodyType: "Command"; env: MDE.Envelope; body: MDE.Command }
   | { bodyType: "ServerSnapshot"; env: MDE.Envelope; body: MDE.ServerSnapshot }
   | { bodyType: "Error"; env: MDE.Envelope; body: MDE.Error };
 
@@ -47,6 +48,12 @@ export function decodeEnvelope(bytes: Uint8Array): EnvelopeDecoded | null {
         env,
         body: env.body(new MDE.ClientInput()) as MDE.ClientInput,
       };
+    case MDE.Body.Command:
+      return {
+        bodyType: "Command",
+        env,
+        body: env.body(new MDE.Command()) as MDE.Command,
+      };
     case MDE.Body.ServerSnapshot:
       return {
         bodyType: "ServerSnapshot",
@@ -62,6 +69,25 @@ export function decodeEnvelope(bytes: Uint8Array): EnvelopeDecoded | null {
     default:
       return null;
   }
+}
+
+export function encodeCommand(
+  seq: number,
+  type: number,
+  payload: Uint8Array
+): Uint8Array {
+  const b = new flatbuffers.Builder(Math.max(128, 16 + payload.byteLength));
+  const pVec = MDE.Command.createPayloadVector(b, payload);
+  const cmd = MDE.Command.createCommand(b, type & 0xffff, pVec);
+  const env = MDE.Envelope.createEnvelope(
+    b,
+    seq >>> 0,
+    BigInt(Date.now()),
+    MDE.Body.Command,
+    cmd
+  );
+  b.finish(env);
+  return b.asUint8Array();
 }
 
 export function encodePing(seq: number, clientTimeMs: bigint): Uint8Array {

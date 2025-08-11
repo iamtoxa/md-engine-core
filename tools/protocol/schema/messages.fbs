@@ -74,6 +74,11 @@ analog1:float;      // произвольная аналоговая ось/тр
 analog2:float;
 }
 
+// Универсальная команда для расширений
+table Command {
+type:uint16;         // тип команды плагина
+payload:[ubyte];     // произвольный payload
+}
 
 // Расширенный снапшот сущности
 // mask bit0=Transform, bit1=Velocity, bit2=Health, bit3=Owner
@@ -111,6 +116,7 @@ ServerHello,
 ClientInput,
 ServerInfo,
 ServerSnapshot,
+Command,           // универсальные команды плагинов
 Error
 }
 

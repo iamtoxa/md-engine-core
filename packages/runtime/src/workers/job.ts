@@ -1,5 +1,6 @@
-import { type FromSupervisor, type ToSupervisor } from "../types/control.js";
+import { type FromSupervisor } from "../types/control.js";
 import { createLogger } from "../logger.js";
+import type { ModuleConfig } from "../config/schema.js";
 
 interface JobConfig {
   logs: {
@@ -7,9 +8,8 @@ interface JobConfig {
     json: boolean;
     pretty: boolean;
   };
+  modules: ModuleConfig[];
 }
-
-let startedAt = Date.now();
 
 const log = createLogger({
   name: "worker:job",
@@ -17,47 +17,56 @@ const log = createLogger({
   json: true,
   pretty: false,
 });
+const jobs = new Map<
+  string,
+  (payload: unknown) => Promise<unknown> | unknown
+>();
+const pluginMetrics = new Map<string, number>();
+function metricsCounter(name: string) {
+  return {
+    inc: (v = 1) => pluginMetrics.set(name, (pluginMetrics.get(name) ?? 0) + v),
+  };
+}
 
-function memRSS() {
-  try {
-    // @ts-ignore node compat
-    return Number(process.memoryUsage?.().rss ?? 0);
-  } catch {
-    return 0;
+async function loadJobPlugins(cfg: JobConfig) {
+  for (const m of cfg.modules) {
+    if (m.target !== "job" && m.target !== "all") continue;
+    try {
+      const mod = await import(/* @vite-ignore */ m.entry);
+      const plugin: import("../ext/types.js").Plugin =
+        mod.default ?? mod.plugin ?? mod;
+      if (plugin?.init) {
+        const ctx: import("../ext/types.js").JobContext = {
+          registerJob: (name, handler) => jobs.set(name, handler),
+          log: {
+            info: (msg, extra) => log.info(msg, extra),
+            warn: (msg, extra) => log.warn(msg, extra),
+            error: (msg, extra) => log.error(msg, extra),
+          },
+          metrics: { counter: metricsCounter },
+          options: m.options ?? {},
+        };
+        await plugin.init({ job: ctx });
+        log.info("plugin loaded (job)", { name: m.name });
+      }
+    } catch (e) {
+      log.error("plugin load failed (job)", { name: m.name, error: String(e) });
+    }
   }
 }
 
-function post(msg: ToSupervisor) {
-  // @ts-ignore
-  postMessage(msg);
-}
-
-function startHeartbeat(workerType: "job", index: number) {
-  const iv = setInterval(() => {
-    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
-    post({
-      type: "heartbeat",
-      workerType,
-      index,
-      uptimeSec,
-      rssBytes: memRSS(),
-    });
-  }, 1000);
-  return () => clearInterval(iv);
-}
-
 // @ts-ignore
-onmessage = (event: MessageEvent<FromSupervisor>) => {
-  const data = event.data;
-  if (data.type === "init" && data.workerType === "job") {
-    startedAt = Date.now();
-    post({ type: "ready", workerType: "job", index: data.index });
-    const stopHB = startHeartbeat("job", data.index);
-    (globalThis as any).__stopHB = stopHB;
-  } else if (data.type === "shutdown") {
-    (globalThis as any).__stopHB?.();
+onmessage = (ev: MessageEvent<FromSupervisor>) => {
+  const data = ev.data;
+  if (data?.type === "init" && data.workerType === "job") {
+    const cfg = data.config as JobConfig;
+    loadJobPlugins(cfg).then(() => {
+      // готов к приёму заданий (через control IPC при необходимости)
+      // postMessage({ type: "ready", workerType: "job", index: data.index }) — если нужно
+    });
+  } else if (data?.type === "shutdown") {
     setTimeout(() => {
-      // @ts-ignore
+      /* @ts-ignore */
       close();
     }, 50);
   }

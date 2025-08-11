@@ -25,14 +25,8 @@ export function makeDefaults(env: Config["env"]): Config {
       corsOrigins: ["*"],
       trustProxy: env === "prod",
     },
-    simulation: {
-      simulationHz: 30,
-      networkSnapshotHz: 20,
-    },
-    aoi: {
-      radius: 50,
-      cellSize: 16,
-    },
+    simulation: { simulationHz: 30, networkSnapshotHz: 20 },
+    aoi: { radius: 50, cellSize: 16 },
     snapshot: {
       keyframeIntervalSec: 2,
       maxEntitiesPerSnapshot: 400,
@@ -54,17 +48,10 @@ export function makeDefaults(env: Config["env"]): Config {
       inputRate: { ratePerSec: 60, burst: 30 },
       maxConnections: 10_000,
     },
-    logs: {
-      json: true,
-      pretty: isDev,
-      level: isDev ? "debug" : "info",
-    },
+    logs: { json: true, pretty: isDev, level: isDev ? "debug" : "info" },
     metrics: { enabled: true },
     tracing: { enabled: false },
-    flags: {
-      path: "config/flags.json",
-      hotReload: isDev,
-    },
+    flags: { path: "config/flags.json", hotReload: isDev },
     auth: {
       jwt: {
         algorithm: "HS256",
@@ -76,10 +63,8 @@ export function makeDefaults(env: Config["env"]): Config {
     worldLimits: {
       softMaxEntitiesPerWorld: 10_000,
       softMaxPlayersPerWorld: 500,
-      splitTrigger: {
-        p99TickMs: 28,
-        consecutiveTicks: 30,
-      },
+      splitTrigger: { p99TickMs: 28, consecutiveTicks: 30 },
     },
+    modules: [], // по умолчанию нет модулей
   };
 }

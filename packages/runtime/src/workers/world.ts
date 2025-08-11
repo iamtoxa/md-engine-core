@@ -17,8 +17,7 @@ import {
 import { World as ECSWorld } from "@iamtoxa/md-engine-ecs-core";
 import { setupGameKit } from "@iamtoxa/md-engine-game-kit";
 import { AOIGrid } from "@iamtoxa/md-engine-game-kit";
-
-
+import type { ModuleConfig } from "../config/schema.js";
 
 interface WorldConfig {
   simulationHz: number;
@@ -29,11 +28,6 @@ interface WorldConfig {
     maxEntitiesPerSnapshot: number;
     maxBytesPerSnapshot: number;
   };
-  logs: {
-    level: "debug" | "info" | "warn" | "error";
-    json: boolean;
-    pretty: boolean;
-  };
   bounds: {
     minX: number;
     minY: number;
@@ -42,6 +36,12 @@ interface WorldConfig {
     maxY: number;
     maxZ: number;
   };
+  logs: {
+    level: "debug" | "info" | "warn" | "error";
+    json: boolean;
+    pretty: boolean;
+  };
+  modules: ModuleConfig[]; // <— модули
 }
 
 type ClientCtx = {
@@ -58,8 +58,6 @@ let startedAt = Date.now();
 let tickCount = 0;
 let tickInterval: number | null = null;
 
-let worldIndexLocal = 0;
-
 const log = createLogger({
   name: "worker:world",
   level: "debug",
@@ -69,18 +67,14 @@ const log = createLogger({
 
 function memRSS() {
   try {
-    // @ts-ignore
     return Number(process.memoryUsage?.().rss ?? 0);
   } catch {
     return 0;
   }
 }
-
 function post(msg: ToSupervisor) {
-  // @ts-ignore
-  postMessage(msg);
+  /* @ts-ignore */ postMessage(msg);
 }
-
 function startHeartbeat(index: number) {
   const iv = setInterval(() => {
     const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
@@ -96,16 +90,67 @@ function startHeartbeat(index: number) {
   return () => clearInterval(iv);
 }
 
-// ECS + AOI
 let W: ECSWorld;
 let comps: ReturnType<typeof setupGameKit>;
 let aoi: AOIGrid;
 let snapshotEveryTicks = 1;
 let keyframeEveryTicks = 40;
+let worldBounds: WorldConfig["bounds"];
+let worldIndexLocal = 0;
 
 const clients = new Map<string, ClientCtx>();
 
-let worldBounds: WorldConfig["bounds"];
+// Плагины: обработчики команд и отправка сообщений
+const messageHandlers = new Map<
+  number,
+  (clientId: string, payload: Uint8Array) => void
+>();
+const pluginMetrics = new Map<string, number>();
+function metricsCounter(name: string) {
+  return {
+    inc: (v = 1) => pluginMetrics.set(name, (pluginMetrics.get(name) ?? 0) + v),
+  };
+}
+
+async function loadWorldPlugins(cfg: WorldConfig) {
+  for (const m of cfg.modules) {
+    if (m.target !== "world" && m.target !== "all") continue;
+    try {
+      const mod = await import(/* @vite-ignore */ m.entry);
+      const plugin: import("../ext/types.js").Plugin =
+        mod.default ?? mod.plugin ?? mod;
+      if (plugin?.init) {
+        const ctx: import("../ext/types.js").WorldContext = {
+          world: W,
+          addSystem: (sys) => W.addSystem(sys),
+          timing: { hz: cfg.simulationHz, snapshotHz: cfg.networkSnapshotHz },
+          log: {
+            info: (msg, extra) => log.info(msg, extra),
+            warn: (msg, extra) => log.warn(msg, extra),
+            error: (msg, extra) => log.error(msg, extra),
+          },
+          metrics: { counter: metricsCounter },
+          options: m.options ?? {},
+          registerMessage: (type, handler) => {
+            messageHandlers.set((type & 0xffff) >>> 0, handler);
+          },
+          sendToClient: (clientId, bytes) => {
+            const c = clients.get(clientId);
+            if (!c) return false;
+            return writerEnqueue(c.outRing, 2, RingFlags.Droppable, bytes);
+          },
+        };
+        await plugin.init({ world: ctx });
+        log.info("plugin loaded (world)", { name: m.name });
+      }
+    } catch (e) {
+      log.error("plugin load failed (world)", {
+        name: m.name,
+        error: String(e),
+      });
+    }
+  }
+}
 
 function initECS(cfg: WorldConfig) {
   W = new ECSWorld({ maxEntities: 100_000 });
@@ -124,31 +169,40 @@ function initECS(cfg: WorldConfig) {
 
 function applyClientInput(client: ClientCtx, bytes: Uint8Array) {
   const env = decodeEnvelope(bytes);
-  if (!env || env.bodyType !== "ClientInput") return;
-  const seq = env.body.seq();
-  client.lastInputSeq = seq >>> 0;
-
-  const move = [
-    env.body.move()!.x(),
-    env.body.move()!.y(),
-    env.body.move()!.z(),
-  ];
-  const look = [
-    env.body.viewDir()!.x(),
-    env.body.viewDir()!.y(),
-    env.body.viewDir()!.z(),
-  ];
-  const buttons = env.body.buttons() >>> 0;
-  const analog1 = env.body.analog1();
-  const analog2 = env.body.analog2();
-
-  const v = W.componentView(comps.InputState, client.playerEid)!;
-  v.write("move", move);
-  v.write("look", look);
-  v.write("buttons", [buttons]);
-  v.write("analog1", [analog1]);
-  v.write("analog2", [analog2]);
-  v.write("seq", [seq]);
+  if (!env) return;
+  if (env.bodyType === "ClientInput") {
+    const seq = env.body.seq();
+    client.lastInputSeq = seq >>> 0;
+    const move = [
+      env.body.move()!.x(),
+      env.body.move()!.y(),
+      env.body.move()!.z(),
+    ];
+    const look = [
+      env.body.viewDir()!.x(),
+      env.body.viewDir()!.y(),
+      env.body.viewDir()!.z(),
+    ];
+    const buttons = env.body.buttons() >>> 0;
+    const analog1 = env.body.analog1();
+    const analog2 = env.body.analog2();
+    const v = W.componentView(comps.InputState, client.playerEid)!;
+    v.write("move", move);
+    v.write("look", look);
+    v.write("buttons", [buttons]);
+    v.write("analog1", [analog1]);
+    v.write("analog2", [analog2]);
+    v.write("seq", [seq]);
+  } else if (env.bodyType === "Command") {
+    const type = env.body.type() & 0xffff;
+    const payload = env.body.payloadArray() ?? new Uint8Array(0);
+    const h = messageHandlers.get(type);
+    if (h) {
+      try {
+        h(client.id, payload);
+      } catch {}
+    }
+  }
 }
 
 function processClientInputs() {
@@ -171,58 +225,15 @@ function updateAOIFromTransforms() {
   }
 }
 
-function checkBoundsAndMigrate(index: number) {
-  // Для всех клиентов (игроков), если вышли за границы — запрос миграции
-  for (const c of clients.values()) {
-    const t = W.componentView(comps.Transform3D, c.playerEid)!;
-    const p = t.read("pos");
-    const minX = worldBounds.minX,
-      maxX = worldBounds.maxX;
-    let targetWorld = -1;
-    if (p[0]! < minX) targetWorld = index - 1;
-    else if (p[0]! >= maxX) targetWorld = index + 1;
-    if (targetWorld >= 0) {
-      // Снимем краткое состояние для handoff
-      const v = W.componentView(comps.Velocity3D, c.playerEid)!.read("vel");
-      const rot = W.componentView(comps.Transform3D, c.playerEid)!.read("rot");
-      const hp = W.componentView(comps.Health, c.playerEid)
-        ? W.componentView(comps.Health, c.playerEid)!.read("hp")[0]
-        : 0;
-      const req: import("../types/control.js").RequestMigrateMessage = {
-        type: "request_migrate",
-        fromWorld: index,
-        clientId: c.id,
-        targetWorld,
-        state: {
-          pos: [p[0]!, p[1]!, p[2]!],
-          rot: [rot[0]!, rot[1]!, rot[2]!, rot[3]!],
-          vel: [v[0]!, v[1]!, v[2]!],
-          hp,
-        },
-      };
-      // @ts-ignore
-      postMessage(req);
-      // После запроса можно пометить сущность на удаление (будет detach)
-      // Здесь не удаляем — дождемся client_detach от Supervisor
-    }
-  }
-}
-
 function buildAndSendSnapshot(cfg: WorldConfig, client: ClientCtx) {
-  const T = comps.Transform3D;
-  const V = comps.Velocity3D;
-  const H = comps.Health;
-
-  // позиция игрока
+  const T = comps.Transform3D,
+    V = comps.Velocity3D,
+    H = comps.Health;
   const tSelf = W.componentView(T, client.playerEid)!;
   const pSelf = tSelf.read("pos");
   const radius = cfg.aoi.radius;
-
-  // кандидаты из соседних клеток
   const cand: number[] = [];
   aoi.queryCells(pSelf[0]!, pSelf[1]!, pSelf[2]!, radius, cand);
-
-  // точная фильтрация по расстоянию
   const r2 = radius * radius;
   const curr = new Set<number>();
   for (const eid of cand) {
@@ -239,8 +250,6 @@ function buildAndSendSnapshot(cfg: WorldConfig, client: ClientCtx) {
     if (dx + dy + dz * dz <= r2) curr.add(eid);
   }
   curr.add(client.playerEid);
-
-  // removed: то, чего больше нет в AOI
   const removed: { id_lo: number; gen_hi: number }[] = [];
   for (const eid of client.aoiPrev) {
     if (!curr.has(eid)) removed.push({ id_lo: eid >>> 0, gen_hi: 0 });
@@ -259,7 +268,6 @@ function buildAndSendSnapshot(cfg: WorldConfig, client: ClientCtx) {
     let vel: [number, number, number] | undefined;
     let hp: number | undefined;
     let owner: number | undefined;
-
     const includeT =
       full ||
       W.componentChanged(comps.Transform3D as any, eid) ||
@@ -272,13 +280,13 @@ function buildAndSendSnapshot(cfg: WorldConfig, client: ClientCtx) {
 
     if (includeT && W.hasComponentById(comps.Transform3D as any, eid)) {
       const t = W.componentView(T, eid)!;
-      pos = t.read("pos") as [number, number, number];
-      rot = t.read("rot") as [number, number, number, number];
+      pos = t.read("pos") as any;
+      rot = t.read("rot") as any;
       mask |= 1 << 0;
     }
     if (includeV && W.hasComponentById(comps.Velocity3D as any, eid)) {
       const v = W.componentView(V, eid)!;
-      vel = v.read("vel") as [number, number, number];
+      vel = v.read("vel") as any;
       mask |= 1 << 1;
     }
     if (includeH && W.hasComponentById(comps.Health as any, eid)) {
@@ -286,9 +294,6 @@ function buildAndSendSnapshot(cfg: WorldConfig, client: ClientCtx) {
       hp = hv.read("hp")[0] || 0;
       mask |= 1 << 2;
     }
-    // Owner: пока 0 (можно проставить accountId hash позже)
-    // mask |= 1 << 3; owner = ...
-
     if (mask === 0 && !full) continue;
 
     entities.push({
@@ -312,45 +317,70 @@ function buildAndSendSnapshot(cfg: WorldConfig, client: ClientCtx) {
     removed
   );
   const ok = writerEnqueue(client.outRing, 2, RingFlags.Droppable, buf);
-  if (!ok) {
-    // дроп по backpressure — ничего не делаем
-  }
-
+  if (ok && full) client.lastKeyTick = tickCount;
   client.aoiPrev = curr;
-  if (full) client.lastKeyTick = tickCount;
+}
+
+function checkBoundsAndMigrate(index: number) {
+  for (const c of clients.values()) {
+    const t = W.componentView(comps.Transform3D, c.playerEid)!;
+    const p = t.read("pos");
+    const minX = worldBounds.minX,
+      maxX = worldBounds.maxX;
+    let targetWorld = -1;
+    if (p[0]! < minX) targetWorld = index - 1;
+    else if (p[0]! >= maxX) targetWorld = index + 1;
+    if (targetWorld >= 0) {
+      const v = W.componentView(comps.Velocity3D, c.playerEid)!.read("vel");
+      const rot = W.componentView(comps.Transform3D, c.playerEid)!.read("rot");
+      const hp = W.componentView(comps.Health, c.playerEid)
+        ? W.componentView(comps.Health, c.playerEid)!.read("hp")[0]
+        : 0;
+      const req: import("../types/control.js").RequestMigrateMessage = {
+        type: "request_migrate",
+        fromWorld: index,
+        clientId: c.id,
+        targetWorld,
+        state: {
+          pos: [p[0]!, p[1]!, p[2]!],
+          rot: [rot[0]!, rot[1]!, rot[2]!, rot[3]!],
+          vel: [v[0]!, v[1]!, v[2]!],
+          hp,
+        },
+      };
+      // @ts-ignore
+      postMessage(req);
+    }
+  }
 }
 
 function tickOnce(cfg: WorldConfig) {
-  // обработка входа
+  // вход
   processClientInputs();
-
-  // ECS фазы
+  // ECS
   W.tick("input", 0);
   W.tick("simulation", 1.0 / cfg.simulationHz);
   W.tick("post", 0);
-
-  // AOI из трансформов
   updateAOIFromTransforms();
-
   checkBoundsAndMigrate(worldIndexLocal);
-
-  // снапшоты по частоте
   if (snapshotEveryTicks > 0 && tickCount % snapshotEveryTicks === 0) {
     for (const c of clients.values()) buildAndSendSnapshot(cfg, c);
     W.tick("snapshot", 0);
   }
-
   tickCount++;
 }
 
 function startWorld(cfg: WorldConfig, index: number) {
   initECS(cfg);
   worldIndexLocal = index;
-  const dtMs = Math.max(1, Math.floor(1000 / cfg.simulationHz));
-  tickInterval = setInterval(() => tickOnce(cfg), dtMs) as unknown as number;
-  log.info("world started", {
-    hz: cfg.simulationHz,
-    snapshotHz: cfg.networkSnapshotHz,
+  loadWorldPlugins(cfg).then(() => {
+    const dtMs = Math.max(1, Math.floor(1000 / cfg.simulationHz));
+    tickInterval = setInterval(() => tickOnce(cfg), dtMs) as unknown as number;
+    log.info("world started", {
+      hz: cfg.simulationHz,
+      snapshotHz: cfg.networkSnapshotHz,
+      bounds: cfg.bounds,
+    });
   });
 }
 
@@ -392,7 +422,6 @@ onmessage = (event: MessageEvent<FromSupervisor>) => {
     });
     W.addComponent(e as any, comps.MoveSpeed, { speed: 5 });
     W.addComponent(e as any, comps.PlayerControlled);
-
     clients.set(msg.clientId, {
       id: msg.clientId,
       inRing,
@@ -402,26 +431,11 @@ onmessage = (event: MessageEvent<FromSupervisor>) => {
       aoiPrev: new Set<number>(),
       lastKeyTick: 0,
     });
-  } else if (data.type === "client_detach") {
-    const msg = data as ClientDetachMessage;
-    const c = clients.get(msg.clientId);
-    if (c) {
-      W.addComponent({ id: c.playerEid, gen: 0 } as any, comps.Destroyed);
-      clients.delete(msg.clientId);
-    }
-  } else if (data.type === "shutdown") {
-    (globalThis as any).__stopHB?.();
-    stopWorld();
-    setTimeout(() => {
-      /* @ts-ignore */
-      close();
-    }, 50);
   } else if ((data as any).type === "client_attach_with_state") {
     const msg =
       data as any as import("../types/control.js").ClientAttachWithStateMessage;
     const inRing = attachRing(msg.inputSab);
     const outRing = attachRing(msg.outputSab);
-    // Создаем player entity и применяем состояние
     const e = W.createEntity();
     W.addComponent(e as any, comps.Transform3D, {
       pos: msg.state.pos,
@@ -439,13 +453,11 @@ onmessage = (event: MessageEvent<FromSupervisor>) => {
     });
     W.addComponent(e as any, comps.MoveSpeed, { speed: 5 });
     W.addComponent(e as any, comps.PlayerControlled);
-    if (msg.state.hp != null) {
+    if (msg.state.hp != null)
       W.addComponent(e as any, comps.Health, {
         hp: msg.state.hp,
         maxHp: msg.state.hp,
       });
-    }
-
     clients.set(msg.clientId, {
       id: msg.clientId,
       inRing,
@@ -455,7 +467,16 @@ onmessage = (event: MessageEvent<FromSupervisor>) => {
       aoiPrev: new Set<number>(),
       lastKeyTick: 0,
     });
+  } else if (data.type === "client_detach") {
+    const msg = data as ClientDetachMessage;
+    const c = clients.get(msg.clientId);
+    if (c) clients.delete(msg.clientId);
+  } else if (data.type === "shutdown") {
+    (globalThis as any).__stopHB?.();
+    stopWorld();
+    setTimeout(() => {
+      /* @ts-ignore */
+      close();
+    }, 50);
   }
 };
-
-

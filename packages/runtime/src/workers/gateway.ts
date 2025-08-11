@@ -18,6 +18,7 @@ import {
   encodeServerHello,
   encodeServerInfo,
 } from "@iamtoxa/md-engine-net";
+import type { ModuleConfig } from "../config/schema.js";
 import type { ServerWebSocket } from "bun";
 
 interface GatewayConfig {
@@ -51,6 +52,9 @@ interface GatewayConfig {
   };
   auth: { alg: "HS256"; secret: string };
   flagsPath: string;
+
+  // новое: модули
+  modules: ModuleConfig[];
 }
 
 type ClientState = {
@@ -61,11 +65,9 @@ type ClientState = {
   fromWorld: ReturnType<typeof attachRing>;
   pump: number | null;
   drops: number;
-  // rate limit
   tokens: number;
   lastRefillMs: number;
   violations: number;
-  // activity / keepalive
   lastActivity: number;
   pingTimer: number | null;
   accountId: string;
@@ -75,7 +77,6 @@ type ClientState = {
 let server: ReturnType<typeof Bun.serve> | null = null;
 let startedAt = Date.now();
 
-// WS метрики
 let wsConnTotal = 0;
 let wsMsgIn = 0;
 let wsMsgOut = 0;
@@ -85,19 +86,13 @@ let wsRateLimited = 0;
 let wsAuthFail = 0;
 let wsOriginBlocked = 0;
 
-// REST метрики
 let restReqTotal = 0;
 let restRateLimited = 0;
 let restAuthFail = 0;
 
-// Пер-IP лимиты соединений
 const ipConn = new Map<string, number>();
-
-// Клиенты
 const clients = new Map<string, ClientState>();
 let clientSeq = 0;
-
-// Распределение по мирам (начальное) — round-robin
 let rrWorld = 0;
 
 const log = createLogger({
@@ -109,28 +104,23 @@ const log = createLogger({
 
 function memRSS() {
   try {
-    // @ts-ignore node compat
     return Number(process.memoryUsage?.().rss ?? 0);
   } catch {
     return 0;
   }
 }
-
 function post(msg: ToSupervisor) {
   // @ts-ignore
   postMessage(msg);
 }
-
 function nowMs() {
   return Date.now();
 }
-
-function corsAllowed(origins: string[], origin: string | null): boolean {
+function corsAllowed(origins: string[], origin: string | null) {
   if (!origin) return true;
-  if (origins.includes("*")) return true;
+  if (origins.includes("")) return true;
   return origins.includes(origin);
 }
-
 function clientIP(req: Request, trustProxy: boolean): string {
   const h = req.headers;
   if (trustProxy) {
@@ -141,16 +131,14 @@ function clientIP(req: Request, trustProxy: boolean): string {
   }
   return "unknown";
 }
-
 function setCorsHeaders(
   resp: Response,
   origin: string | null,
   allowed: string[] | string
 ) {
   const headers = new Headers(resp.headers);
-  if (allowed === "") {
-    headers.set("access-control-allow-origin", "*");
-  } else if (origin && allowed.includes(origin)) {
+  if (allowed === "") headers.set("access-control-allow-origin", "*");
+  else if (origin && allowed.includes(origin)) {
     headers.set("access-control-allow-origin", origin);
     headers.set("vary", "Origin");
   }
@@ -162,7 +150,6 @@ function setCorsHeaders(
   headers.set("access-control-max-age", "600");
   return new Response(resp.body, { status: resp.status, headers });
 }
-
 function refillTokens(c: ClientState, ratePerSec: number, burst: number) {
   const now = nowMs();
   const elapsed = Math.max(0, now - c.lastRefillMs);
@@ -171,9 +158,7 @@ function refillTokens(c: ClientState, ratePerSec: number, burst: number) {
     c.lastRefillMs = now;
   }
 }
-
 function startPump(c: ClientState) {
-  // Читает из очереди мира и отправляет в WS
   c.pump = setInterval(() => {
     let iter = 0;
     while (iter++ < 64) {
@@ -188,7 +173,6 @@ function startPump(c: ClientState) {
     }
   }, 5) as unknown as number;
 }
-
 function stopPump(c: ClientState) {
   if (c.pump != null) {
     clearInterval(c.pump);
@@ -201,7 +185,6 @@ function stopPump(c: ClientState) {
 }
 
 function startKeepAlive(c: ClientState) {
-  // каждые ~25s посылаем Ping, idle >60s — закрываем
   c.pingTimer = setInterval(() => {
     const idleMs = nowMs() - c.lastActivity;
     if (idleMs > 60_000) {
@@ -217,7 +200,6 @@ function startKeepAlive(c: ClientState) {
     } catch {}
   }, 25_000) as unknown as number;
 }
-
 function fnv1a32(input: string): string {
   let h = 0x811c9dc5 >>> 0;
   for (let i = 0; i < input.length; i++) {
@@ -226,8 +208,6 @@ function fnv1a32(input: string): string {
   }
   return "u-" + h.toString(16).padStart(8, "0");
 }
-
-// JWT
 async function verifyJWT(token: string | null, secret: string) {
   if (!token) return null;
   try {
@@ -236,19 +216,16 @@ async function verifyJWT(token: string | null, secret: string) {
       algorithms: ["HS256"],
       issuer: "md-engine",
     });
-    const sub = typeof payload.sub === "string" ? payload.sub : null;
-    return sub;
+    return typeof payload.sub === "string" ? payload.sub : null;
   } catch {
     return null;
   }
 }
-
 function bearerToken(req: Request): string | null {
   const a = req.headers.get("authorization");
   if (a && a.toLowerCase().startsWith("bearer ")) return a.slice(7).trim();
   return null;
 }
-
 function parseTTL(ttl: string): number {
   const m = ttl.match(/^(\d+)(ms|s|m|h|d)$/);
   if (!m) return 0;
@@ -268,7 +245,6 @@ function parseTTL(ttl: string): number {
       return 0;
   }
 }
-
 function jsonOk(data: unknown) {
   return new Response(JSON.stringify({ ok: true, data }), {
     headers: { "content-type": "application/json; charset=utf-8" },
@@ -281,10 +257,68 @@ function jsonErr(code: string, message: string, http = 400) {
   });
 }
 
+// Плагины: маршруты и WS-хендлеры
+type Route = {
+  path: string;
+  handler: (c: any) => Promise<Response> | Response;
+};
+const pluginRestRoutes: Route[] = [];
+const pluginAdminRoutes: Route[] = [];
+const pluginWsHandlers: Array<
+  (
+    clientId: string,
+    data: Uint8Array,
+    send: (bytes: Uint8Array) => void
+  ) => boolean | void
+> = [];
+const pluginMetrics = new Map<string, number>();
+function metricsCounter(name: string) {
+  return {
+    inc: (v = 1) => pluginMetrics.set(name, (pluginMetrics.get(name) ?? 0) + v),
+  };
+}
+
+async function loadGatewayPlugins(cfg: GatewayConfig, app: Hono) {
+  for (const m of cfg.modules) {
+    if (m.target !== "gateway" && m.target !== "all") continue;
+    try {
+      const mod = await import(/* @vite-ignore */ m.entry);
+      const plugin: import("../ext/types.js").Plugin =
+        mod.default ?? mod.plugin ?? mod;
+      if (plugin?.init) {
+        const ctx: import("../ext/types.js").GatewayContext = {
+          addRestRoute: (path, handler) =>
+            pluginRestRoutes.push({ path, handler }),
+          addAdminRoute: (path, handler) =>
+            pluginAdminRoutes.push({ path, handler }),
+          registerWsHandler: (handler) => pluginWsHandlers.push(handler),
+          metrics: { counter: metricsCounter },
+          log: {
+            info: (msg, extra) => log.info(msg, extra),
+            warn: (msg, extra) => log.warn(msg, extra),
+            error: (msg, extra) => log.error(msg, extra),
+          },
+          options: m.options ?? {},
+        };
+        await plugin.init({ gateway: ctx });
+        log.info("plugin loaded (gateway)", { name: m.name });
+      }
+    } catch (e) {
+      log.error("plugin load failed (gateway)", {
+        name: m.name,
+        error: String(e),
+      });
+    }
+  }
+  // Зарегистрируем маршруты
+  for (const r of pluginRestRoutes) app.get(r.path, (c) => r.handler(c));
+  for (const r of pluginAdminRoutes) app.get(r.path, (c) => r.handler(c));
+}
+
 function startGateway(cfg: GatewayConfig, index: number) {
   const app = new Hono();
 
-  // CORS + preflight для REST
+  // CORS + preflight
   app.use("", async (c, next) => {
     const origin = c.req.header("origin") ?? null;
     if (c.req.method === "OPTIONS") {
@@ -300,7 +334,7 @@ function startGateway(cfg: GatewayConfig, index: number) {
     c.res = setCorsHeaders(c.res, origin, allowed);
   });
 
-  // Лимит размера тела REST
+  // Rate-limit REST минимально
   const REST_BODY_LIMIT = 64 * 1024;
   app.use("*", async (c, next) => {
     const cl = c.req.header("content-length");
@@ -320,42 +354,6 @@ function startGateway(cfg: GatewayConfig, index: number) {
     await next();
   });
 
-  // Rate-limit REST (120 req/min, burst 60)
-  const restBuckets = new Map<string, { tokens: number; last: number }>();
-  function refillIpBucket(ip: string) {
-    const REST_RATE = 120,
-      REST_BURST = 60;
-    const s = restBuckets.get(ip) ?? { tokens: REST_BURST, last: nowMs() };
-    const elapsed = nowMs() - s.last;
-    if (elapsed > 0) {
-      s.tokens = Math.min(REST_BURST, s.tokens + (elapsed / 60000) * REST_RATE);
-      s.last = nowMs();
-    }
-    restBuckets.set(ip, s);
-    return s;
-  }
-  app.use("*", async (c, next) => {
-    const ip = clientIP(c.req.raw, cfg.trustProxy);
-    const b = refillIpBucket(ip);
-    if (b.tokens < 1) {
-      restRateLimited++;
-      restReqTotal++;
-      return c.body(
-        JSON.stringify({
-          ok: false,
-          error: { code: "rate_limit", message: "Too many requests" },
-        }),
-        429
-      );
-    }
-    b.tokens -= 1;
-    await next();
-  });
-
-  // REST маршруты
-  const v1 = `${cfg.restPrefix}/v1`;
-
-  // Auth helpers
   async function signJwt(payload: Record<string, unknown>, ttlSec: number) {
     const key = new TextEncoder().encode(cfg.auth.secret);
     const now = Math.floor(nowMs() / 1000);
@@ -441,7 +439,19 @@ function startGateway(cfg: GatewayConfig, index: number) {
     }
   }
 
-  // POST /auth/login — dev-only (password игнорируем), sub = fnv1a32(login)
+  // REST базовые маршруты (короткая версия)
+  const v1 = `${cfg.restPrefix}/v1`;
+  console.log(`${v1}/server/info`);
+  app.get(`${v1}/server/info`, (c) => {
+    restReqTotal++;
+    return jsonOk({
+      version: cfg.serverVersion,
+      protocol: { major: cfg.protocolMajor, minor: cfg.protocolMinor },
+      tickRate: cfg.tickRate,
+      worldCount: cfg.worldCount,
+      env: cfg.env,
+    });
+  });
   app.post(`${v1}/auth/login`, async (c) => {
     restReqTotal++;
     const body = (await c.req.json().catch(() => null)) as {
@@ -469,7 +479,6 @@ function startGateway(cfg: GatewayConfig, index: number) {
     });
   });
 
-  // POST /auth/refresh
   app.post(`${v1}/auth/refresh`, async (c) => {
     restReqTotal++;
     const token =
@@ -508,7 +517,6 @@ function startGateway(cfg: GatewayConfig, index: number) {
     }
   });
 
-  // GET /me — требует access
   app.get(`${v1}/me`, async (c) => {
     restReqTotal++;
     const err = await verifyAccess(c);
@@ -517,29 +525,6 @@ function startGateway(cfg: GatewayConfig, index: number) {
     return jsonOk({ sub: user.sub, role: user.role });
   });
 
-  // GET /server/info — публично
-  app.get(`${v1}/server/info`, (c) => {
-    restReqTotal++;
-    return jsonOk({
-      version: cfg.serverVersion,
-      protocol: { major: cfg.protocolMajor, minor: cfg.protocolMinor },
-      tickRate: cfg.tickRate,
-      worldCount: cfg.worldCount,
-      env: cfg.env,
-    });
-  });
-
-  // GET /worlds — публично (минимально)
-  app.get(`${v1}/worlds`, (c) => {
-    restReqTotal++;
-    const worlds = Array.from(
-      { length: Math.max(1, cfg.worldCount) },
-      (_, i) => ({ id: i })
-    );
-    return jsonOk({ worlds });
-  });
-
-  // Admin: GET /admin/flags
   app.get(`${cfg.adminPrefix}/flags`, async (c) => {
     restReqTotal++;
     const err = await verifyAdmin(c);
@@ -555,7 +540,6 @@ function startGateway(cfg: GatewayConfig, index: number) {
     }
   });
 
-  // Admin: POST /admin/scale — пока заглушка
   app.post(`${cfg.adminPrefix}/scale`, async (c) => {
     restReqTotal++;
     const err = await verifyAdmin(c);
@@ -567,7 +551,14 @@ function startGateway(cfg: GatewayConfig, index: number) {
     );
   });
 
-  // Метрики
+  app.get(`${v1}/worlds`, (c) => {
+    restReqTotal++;
+    const worlds = Array.from(
+      { length: Math.max(1, cfg.worldCount) },
+      (_, i) => ({ id: i })
+    );
+    return jsonOk({ worlds });
+  });
   app.get(cfg.metricsPath, (c) => {
     c.header("content-type", "text/plain; charset=utf-8");
     const lines = [
@@ -583,209 +574,219 @@ function startGateway(cfg: GatewayConfig, index: number) {
       `rest_rate_limited_total ${restRateLimited}`,
       `rest_auth_fail_total ${restAuthFail}`,
     ];
+    // Плагины метрики
+    for (const [k, v] of pluginMetrics) lines.push(`plugin_${k} ${v}`);
     return c.body(lines.join("\n") + "\n");
   });
 
-  // Bun.serve: WS + REST
-  server = Bun.serve({
-    hostname: cfg.host,
-    port: cfg.port,
-    fetch: async (req, srv) => {
-      const url = new URL(req.url);
-      if (url.pathname === cfg.wsPath) {
-        // Origin check
-        const origin = req.headers.get("origin");
-        if (!corsAllowed(cfg.corsOrigins, origin)) {
-          wsOriginBlocked++;
-          return new Response("Forbidden origin", { status: 403 });
+  // Загрузка плагинов ДО старта сервера
+  loadGatewayPlugins(cfg, app).then(() => {
+    server = Bun.serve({
+      hostname: cfg.host,
+      port: cfg.port,
+      fetch: async (req, srv) => {
+        const url = new URL(req.url);
+        if (url.pathname === cfg.wsPath) {
+          const origin = req.headers.get("origin");
+          if (!corsAllowed(cfg.corsOrigins, origin)) {
+            wsOriginBlocked++;
+            return new Response("Forbidden origin", { status: 403 });
+          }
+          let token: string | null = null;
+          const auth = req.headers.get("authorization");
+          if (auth && auth.toLowerCase().startsWith("bearer "))
+            token = auth.slice(7).trim();
+          if (!token) token = url.searchParams.get("token");
+          const sub = await verifyJWT(token, cfg.auth.secret);
+          if (!sub) {
+            wsAuthFail++;
+            return new Response("Unauthorized", { status: 401 });
+          }
+          const ip = clientIP(req, cfg.trustProxy);
+          const cur = ipConn.get(ip) ?? 0;
+          if (cur >= cfg.limits.ipConnections)
+            return new Response("Too many connections from IP", {
+              status: 429,
+            });
+          const ok = srv.upgrade(req, { data: { accountId: sub, ip } });
+          if (ok) return;
+          return new Response("Upgrade failed", { status: 400 });
         }
-        // Auth (Authorization: Bearer или ?token=)
-        let token: string | null = null;
-        const auth = req.headers.get("authorization");
-        if (auth && auth.toLowerCase().startsWith("bearer "))
-          token = auth.slice(7).trim();
-        if (!token) token = url.searchParams.get("token");
-        const sub = await verifyJWT(token, cfg.auth.secret);
-        if (!sub) {
-          wsAuthFail++;
-          return new Response("Unauthorized", { status: 401 });
-        }
-        // Пер-IP лимит коннектов
-        const ip = clientIP(req, cfg.trustProxy);
-        const cur = ipConn.get(ip) ?? 0;
-        if (cur >= cfg.limits.ipConnections) {
-          return new Response("Too many connections from IP", { status: 429 });
-        }
-        // Апгрейд
-        const ok = srv.upgrade(req, { data: { accountId: sub, ip } });
-        if (ok) return;
-        return new Response("Upgrade failed", { status: 400 });
-      }
-      return app.fetch(req);
-    },
-    websocket: {
-      perMessageDeflate: false,
-      open(ws) {
-        wsConnTotal++;
-        const id = `c-${index}-${++clientSeq}`;
-        const accountId = (ws.data as any)?.accountId ?? "anon";
-        const ip = (ws.data as any)?.ip ?? "unknown";
-        // пер-IP счётчик
-        ipConn.set(ip, (ipConn.get(ip) ?? 0) + 1);
-
-        // начальное назначение мира (round-robin)
-        const worldIndex = rrWorld++ % Math.max(1, cfg.worldCount);
-
-        // SAB
-        const inRing = createRing(cfg.ipc.inputBytes);
-        const outRing = createRing(cfg.ipc.outputBytes);
-
-        const state: ClientState = {
-          id,
-          ws,
-          worldIndex,
-          toWorld: attachRing(inRing.sab),
-          fromWorld: attachRing(outRing.sab),
-          pump: null,
-          drops: 0,
-          tokens: cfg.limits.inputRate.burst,
-          lastRefillMs: nowMs(),
-          violations: 0,
-          lastActivity: nowMs(),
-          pingTimer: null,
-          accountId,
-          ip,
-        };
-        (ws as any).__state = state;
-        clients.set(id, state);
-
-        // ServerHello (бинарно)
-        const hello = encodeServerHello(
-          1,
-          cfg.serverVersion,
-          cfg.protocolMajor,
-          cfg.protocolMinor,
-          worldIndex >>> 0,
-          cfg.tickRate & 0xffff,
-          BigInt(nowMs())
-        );
-        try {
-          ws.send(hello);
-          wsMsgOut++;
-        } catch {}
-
-        // Уведомим Supervisor → World
-        const msg: ClientOpenMessage = {
-          type: "client_open",
-          workerType: "gateway",
-          index,
-          clientId: id,
-          worldIndex,
-          inputSab: inRing.sab,
-          outputSab: outRing.sab,
-        };
-        post(msg);
-
-        // Насос исходящих и keepalive
-        startPump(state);
-        startKeepAlive(state);
+        return app.fetch(req);
       },
-      message(ws, message) {
-        const c: ClientState | undefined = (ws as any).__state;
-        if (!c) return;
-        c.lastActivity = nowMs();
-        wsMsgIn++;
+      websocket: {
+        perMessageDeflate: false,
+        open(ws) {
+          wsConnTotal++;
+          const id = `c-${index}-${++clientSeq}`;
+          const accountId = (ws.data as any)?.accountId ?? "anon";
+          const ip = (ws.data as any)?.ip ?? "unknown";
+          ipConn.set(ip, (ipConn.get(ip) ?? 0) + 1);
+          const worldIndex = rrWorld++ % Math.max(1, cfg.worldCount);
+          const inRing = createRing(cfg.ipc.inputBytes);
+          const outRing = createRing(cfg.ipc.outputBytes);
 
-        // Текстовые кадры: в dev — эхо, иначе игнор
-        if (typeof message === "string") {
-          if (cfg.env === "dev") {
-            try {
-              ws.send(message);
-              wsMsgOut++;
-            } catch {}
-          }
-          return;
-        }
+          const state: ClientState = {
+            id,
+            ws,
+            worldIndex,
+            toWorld: attachRing(inRing.sab),
+            fromWorld: attachRing(outRing.sab),
+            pump: null,
+            drops: 0,
+            tokens: cfg.limits.inputRate.burst,
+            lastRefillMs: nowMs(),
+            violations: 0,
+            lastActivity: nowMs(),
+            pingTimer: null,
+            accountId,
+            ip,
+          };
+          (ws as any).__state = state;
+          clients.set(id, state);
 
-        if (!(message instanceof Uint8Array)) return;
-        if (
-          message.byteLength > cfg.limits.maxWsFrameBytes ||
-          message.byteLength > cfg.limits.maxMessageBytes
-        ) {
+          const hello = encodeServerHello(
+            1,
+            cfg.serverVersion,
+            cfg.protocolMajor,
+            cfg.protocolMinor,
+            worldIndex >>> 0,
+            cfg.tickRate & 0xffff,
+            BigInt(nowMs())
+          );
           try {
-            ws.close(1008, "frame_too_large");
-          } catch {}
-          return;
-        }
-
-        // Rate limit
-        refillTokens(
-          c,
-          cfg.limits.inputRate.ratePerSec,
-          cfg.limits.inputRate.burst
-        );
-        if (c.tokens < 1) {
-          c.violations++;
-          wsRateLimited++;
-          if (c.violations >= 3) {
-            try {
-              ws.close(1008, "rate_limit");
-            } catch {}
-          }
-          return;
-        }
-        c.tokens -= 1;
-        c.violations = 0;
-
-        // Протокол Ping → Pong
-        const env = decodeEnvelope(message);
-        if (env && env.bodyType === "Ping") {
-          const now = BigInt(nowMs());
-          const echo = BigInt(env.body.clientTimeMs());
-          const pong = encodePong((env.env.seq() >>> 0) + 1, now, echo);
-          try {
-            ws.send(pong);
+            ws.send(hello);
             wsMsgOut++;
           } catch {}
-          return;
-        }
 
-        // Форвард в мир
-        const ok = writerEnqueue(c.toWorld, /*type=*/ 1, /*flags=*/ 0, message);
-        if (!ok) {
-          c.drops++;
-          wsDroppedIn++;
-          c.violations++;
-          if (c.violations >= 3) {
+          const msg: ClientOpenMessage = {
+            type: "client_open",
+            workerType: "gateway",
+            index,
+            clientId: id,
+            worldIndex,
+            inputSab: inRing.sab,
+            outputSab: outRing.sab,
+          };
+          post(msg);
+
+          startPump(state);
+          // Пинг/idle
+          state.pingTimer = setInterval(() => {
+            const idleMs = nowMs() - state.lastActivity;
+            if (idleMs > 60_000) {
+              try {
+                ws.close(1008, "idle_timeout");
+              } catch {}
+              return;
+            }
+            const ping = encodePing(0, BigInt(nowMs()));
             try {
-              ws.close(1008, "backpressure_input");
+              ws.send(ping);
+              wsMsgOut++;
+            } catch {}
+          }, 25_000) as unknown as number;
+        },
+        message(ws, message) {
+          const c: ClientState | undefined = (ws as any).__state;
+          if (!c) return;
+          c.lastActivity = nowMs();
+          wsMsgIn++;
+
+          if (typeof message === "string") return;
+          if (!(message instanceof Uint8Array)) return;
+          if (
+            message.byteLength > cfg.limits.maxWsFrameBytes ||
+            message.byteLength > cfg.limits.maxMessageBytes
+          ) {
+            try {
+              ws.close(1008, "frame_too_large");
+            } catch {}
+            return;
+          }
+
+          refillTokens(
+            c,
+            cfg.limits.inputRate.ratePerSec,
+            cfg.limits.inputRate.burst
+          );
+          if (c.tokens < 1) {
+            c.violations++;
+            wsRateLimited++;
+            if (c.violations >= 3) {
+              try {
+                ws.close(1008, "rate_limit");
+              } catch {}
+            }
+            return;
+          }
+          c.tokens -= 1;
+          c.violations = 0;
+
+          // Протокол Ping → Pong
+          const env = decodeEnvelope(message);
+          if (env && env.bodyType === "Ping") {
+            const now = BigInt(nowMs());
+            const echo = BigInt(env.body.clientTimeMs());
+            const pong = encodePong((env.env.seq() >>> 0) + 1, now, echo);
+            try {
+              ws.send(pong);
+              wsMsgOut++;
+            } catch {}
+            return;
+          }
+
+          // Плагины: WS-хендлеры (могут перехватить)
+          for (const h of pluginWsHandlers) {
+            try {
+              const handled = h(c.id, message, (bytes) => {
+                try {
+                  c.ws.send(bytes);
+                  wsMsgOut++;
+                } catch {}
+              });
+              if (handled) return;
             } catch {}
           }
-          return;
-        }
-      },
-      close(ws) {
-        const c: ClientState | undefined = (ws as any).__state;
-        if (!c) return;
-        stopPump(c);
-        clients.delete(c.id);
-        // пер-IP счётчик
-        const cur = ipConn.get(c.ip) ?? 0;
-        ipConn.set(c.ip, Math.max(0, cur - 1));
-        // Сообщить World
-        const msg: ClientCloseMessage = {
-          type: "client_close",
-          workerType: "gateway",
-          index,
-          clientId: c.id,
-          worldIndex: c.worldIndex,
-        };
-        post(msg);
-      },
-    },
-  });
 
-  log.info("gateway listening", { port: cfg.port, wsPath: cfg.wsPath });
+          // Форвард в мир
+          const ok = writerEnqueue(
+            c.toWorld,
+            /*type=*/ 1,
+            /*flags=*/ 0,
+            message
+          );
+          if (!ok) {
+            c.drops++;
+            wsDroppedIn++;
+            c.violations++;
+            if (c.violations >= 3) {
+              try {
+                ws.close(1008, "backpressure_input");
+              } catch {}
+            }
+          }
+        },
+        close(ws) {
+          const c: ClientState | undefined = (ws as any).__state;
+          if (!c) return;
+          stopPump(c);
+          clients.delete(c.id);
+          const cur = ipConn.get(c.ip) ?? 0;
+          ipConn.set(c.ip, Math.max(0, cur - 1));
+          const msg: ClientCloseMessage = {
+            type: "client_close",
+            workerType: "gateway",
+            index,
+            clientId: c.id,
+            worldIndex: c.worldIndex,
+          };
+          post(msg);
+        },
+      },
+    });
+    log.info("gateway listening", { port: cfg.port, wsPath: cfg.wsPath });
+  });
 }
 
 function stopGateway() {
@@ -794,7 +795,6 @@ function stopGateway() {
   } catch {}
   server = null;
 }
-
 function startHeartbeat(workerIndex: number) {
   const iv = setInterval(() => {
     const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
@@ -809,7 +809,6 @@ function startHeartbeat(workerIndex: number) {
   return () => clearInterval(iv);
 }
 
-// Обработка сообщений от Supervisor
 // @ts-ignore
 onmessage = (event: MessageEvent<FromSupervisor | any>) => {
   const data = event.data;
@@ -827,7 +826,6 @@ onmessage = (event: MessageEvent<FromSupervisor | any>) => {
       close();
     }, 50);
   } else if (data?.type === "client_zone_change") {
-    // Уведомление клиента о смене зоны: отправляем ServerInfo(world_id)
     const { clientId, worldId } = data as { clientId: string; worldId: number };
     const c = clients.get(clientId);
     if (c) {
@@ -835,7 +833,6 @@ onmessage = (event: MessageEvent<FromSupervisor | any>) => {
         const buf = encodeServerInfo(0, worldId >>> 0);
         c.ws.send(buf);
         wsMsgOut++;
-        // локально обновим worldIndex (маршрутизация input идёт через SAB в Supervisor/World, но это для видимости)
         c.worldIndex = worldId >>> 0;
       } catch {}
     }

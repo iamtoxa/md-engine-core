@@ -20,12 +20,13 @@
   "workspaces": [
     "apps/*",
     "packages/*",
-    "tools/*"
+    "tools/*",
+    "examples/*"
   ],
   "type": "module",
   "scripts": {
     "gen:protocol": "bun run tools/protocol/scripts/gen.ts",
-    "dev": "bun run apps/server/src/index.ts",
+    "dev": "cd examples/base-server && bun run dev",
     "prepare": "lefthook install || bunx lefthook install || true",
     "format": "biome format --write .",
     "format:check": "biome format --check .",

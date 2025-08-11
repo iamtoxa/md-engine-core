@@ -18,6 +18,13 @@
         "@iamtoxa/md-engine-runtime": "workspace:*",
       },
     },
+    "examples/base-server": {
+      "name": "@iamtoxa/md-example-base-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@iamtoxa/md-engine-server": "workspace:*",
+      },
+    },
     "packages/data": {
       "name": "@iamtoxa/md-engine-data",
       "version": "0.0.0",
@@ -130,6 +137,8 @@
     "@iamtoxa/md-engine-tools-protocol": ["@iamtoxa/md-engine-tools-protocol@workspace:tools/protocol"],
 
     "@iamtoxa/md-engine-utils": ["@iamtoxa/md-engine-utils@workspace:packages/utils"],
+
+    "@iamtoxa/md-example-base-server": ["@iamtoxa/md-example-base-server@workspace:examples/base-server"],
 
     "@jest/diff-sequences": ["@jest/diff-sequences@30.0.1", "", {}, "sha512-n5H8QLDJ47QqbCNn5SuFjCRDrOLEZ0h8vAHCK5RL9Ls7Xa8AQLa/YxAc9UjFqoEDM48muwtBGjtMY5cr0PLDCw=="],
 

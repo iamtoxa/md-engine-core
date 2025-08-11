@@ -1,3 +1,126 @@
+import { readFile } from "fs/promises";
+import path from "path";
+import { z } from "zod";
+import { ModuleSchema, type ModuleConfig } from "./schema.js";
+import { pathToFileURL } from "url";
+
+/**
+Возвращает абсолютный путь к файлу конфигураций модулей, если он задан.
+Берётся из переменной окружения MD_MODULES_CONFIG_FILE. */
+export function envGetModulesConfigPath(): string | null {
+  const p = (process.env.MD_MODULES_CONFIG_FILE ?? "").trim();
+  if (!p) return null;
+  return path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+}
+
+/**
+Простая проверка на "bare specifier" (npm-пакет), который не надо
+преобразовывать в путь. Примеры: "my-mod/plugin", "@scope/pkg/file". */
+function isBareSpecifier(spec: string): boolean {
+  if (!spec) return false;
+  if (spec.startsWith("file://")) return false;
+  if (
+    spec.startsWith("./") ||
+    spec.startsWith("../") ||
+    spec.startsWith(".\\") ||
+    spec.startsWith("..\\")
+  )
+    return false;
+  if (path.isAbsolute(spec)) return false; // Windows: диск C:...
+  if (/^[A-Za-z]:[\/]/.test(spec)) return false; // Иначе считаем bare
+  return true;
+}
+
+/**
+Разрешает entry относительно каталога файла конфигурации.
+Абсолютные пути -> file://
+Относительные (./, ../) -> file:// относительно baseDir
+bare specifier (npm пакет) -> без изменений
+уже file:// -> без изменений */
+function resolveEntryRelative(entry: string, baseDir: string): string {
+  if (!entry) return entry;
+  if (entry.startsWith("file://")) return entry;
+  if (isBareSpecifier(entry)) return entry;
+  if (path.isAbsolute(entry)) {
+    return pathToFileURL(entry).href;
+  }
+  const abs = path.resolve(baseDir, entry);
+  return pathToFileURL(abs).href;
+}
+
+/**
+Загружает и валидирует список модулей из файла, указанного в MD_MODULES_CONFIG_FILE.
+Поддерживаем форматы:
+массив модулей: [ { name, entry, ... }, ... ]
+объект с полем { modules: [...] }
+Для каждого модуля entry резолвится относительно директории файла конфигурации.
+При ошибках возвращает пустой массив и пишет предупреждение. */
+export async function loadModulesFromEnv(): Promise<ModuleConfig[]> {
+  const fullPath = envGetModulesConfigPath();
+  if (!fullPath) return [];
+
+  let text: string;
+  try {
+    text = await readFile(fullPath, "utf8");
+  } catch (e) {
+    console.warn(
+      `[env] cannot read MD_MODULES_CONFIG_FILE: ${fullPath}: ${String(e)}`
+    );
+    return [];
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    console.warn(`[env] invalid JSON in ${fullPath}: ${String(e)}`);
+    return [];
+  }
+
+  let rawModules: unknown;
+  if (Array.isArray(json)) {
+    rawModules = json;
+  } else if (
+    json &&
+    typeof json === "object" &&
+    Array.isArray((json as any).modules)
+  ) {
+    rawModules = (json as any).modules;
+  } else {
+    console.warn(
+      `[env] ${fullPath} must be an array of modules or an object with { modules: [...] }`
+    );
+    return [];
+  }
+
+  const parsed = z.array(ModuleSchema).safeParse(rawModules);
+  if (!parsed.success) {
+    console.warn(
+      `[env] modules config validation failed: ${parsed.error.toString()}`
+    );
+    return [];
+  }
+
+  const baseDir = path.dirname(fullPath);
+  const modules: ModuleConfig[] = parsed.data.map((m) => ({
+    ...m,
+    entry: resolveEntryRelative(m.entry, baseDir),
+  }));
+
+  return modules;
+}
+
+/**
+Удобный хелпер для слияния модулей из env с уже имеющимися в конфиге.
+Если в env задан файл — он переопределяет список модулей целиком. */
+export async function mergeModulesWithEnv(
+  existing: ModuleConfig[]
+): Promise<ModuleConfig[]> {
+  const fromEnv = await loadModulesFromEnv();
+  if (fromEnv.length > 0) return fromEnv;
+  return existing;
+}
+
 function parseBool(v: string | undefined): boolean | undefined {
   if (v == null) return undefined;
   const s = v.trim().toLowerCase();

@@ -4,6 +4,7 @@
 
 import { ClientHello } from '../mde/client-hello.js';
 import { ClientInput } from '../mde/client-input.js';
+import { Command } from '../mde/command.js';
 import { Error } from '../mde/error.js';
 import { Ping } from '../mde/ping.js';
 import { Pong } from '../mde/pong.js';
@@ -21,13 +22,14 @@ export enum Body {
   ClientInput = 5,
   ServerInfo = 6,
   ServerSnapshot = 7,
-  Error = 8
+  Command = 8,
+  Error = 9
 }
 
 export function unionToBody(
   type: Body,
-  accessor: (obj:ClientHello|ClientInput|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot) => ClientHello|ClientInput|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null
-): ClientHello|ClientInput|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null {
+  accessor: (obj:ClientHello|ClientInput|Command|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot) => ClientHello|ClientInput|Command|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null
+): ClientHello|ClientInput|Command|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null {
   switch(Body[type]) {
     case 'NONE': return null; 
     case 'Ping': return accessor(new Ping())! as Ping;
@@ -37,6 +39,7 @@ export function unionToBody(
     case 'ClientInput': return accessor(new ClientInput())! as ClientInput;
     case 'ServerInfo': return accessor(new ServerInfo())! as ServerInfo;
     case 'ServerSnapshot': return accessor(new ServerSnapshot())! as ServerSnapshot;
+    case 'Command': return accessor(new Command())! as Command;
     case 'Error': return accessor(new Error())! as Error;
     default: return null;
   }
@@ -44,9 +47,9 @@ export function unionToBody(
 
 export function unionListToBody(
   type: Body, 
-  accessor: (index: number, obj:ClientHello|ClientInput|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot) => ClientHello|ClientInput|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null, 
+  accessor: (index: number, obj:ClientHello|ClientInput|Command|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot) => ClientHello|ClientInput|Command|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null, 
   index: number
-): ClientHello|ClientInput|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null {
+): ClientHello|ClientInput|Command|Error|Ping|Pong|ServerHello|ServerInfo|ServerSnapshot|null {
   switch(Body[type]) {
     case 'NONE': return null; 
     case 'Ping': return accessor(index, new Ping())! as Ping;
@@ -56,6 +59,7 @@ export function unionListToBody(
     case 'ClientInput': return accessor(index, new ClientInput())! as ClientInput;
     case 'ServerInfo': return accessor(index, new ServerInfo())! as ServerInfo;
     case 'ServerSnapshot': return accessor(index, new ServerSnapshot())! as ServerSnapshot;
+    case 'Command': return accessor(index, new Command())! as Command;
     case 'Error': return accessor(index, new Error())! as Error;
     default: return null;
   }

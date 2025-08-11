@@ -7,6 +7,7 @@
         { "path": "packages/game-kit" },
         { "path": "packages/data" },
         { "path": "packages/runtime" },
-        { "path": "apps/server" }
+        { "path": "apps/server" },
+        { "path": "examples/base-server" }
     ]
 }

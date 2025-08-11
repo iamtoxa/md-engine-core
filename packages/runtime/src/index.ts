@@ -7,3 +7,4 @@ export * from './config/index'
 
 export { startSupervisor, Supervisor } from "./supervisor/supervisor.js"
 export { loadConfig, summarizeConfig } from "./config/index.js"
+export type { Plugin, PluginMeta } from "./ext/types"

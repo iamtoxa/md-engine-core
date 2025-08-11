@@ -21,7 +21,8 @@
             "@iamtoxa/md-engine-runtime": ["packages/runtime/src"],
             "@iamtoxa/md-engine-utils": ["packages/utils/src"],
             "@iamtoxa/md-engine-game-kit": ["packages/game-kit/src"],
-            "@iamtoxa/md-engine-data": ["packages/data/src"]
+            "@iamtoxa/md-engine-data": ["packages/data/src"],
+            "@iamtoxa/md-engine-server": ["apps/server/src"]
         }
     },
     "exclude": ["node_modules", "dist", "build", "coverage"]

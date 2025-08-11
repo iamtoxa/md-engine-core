@@ -1,0 +1,8 @@
+[
+  {
+    "name": "example-world",
+    "entry": "./plugins/world_mod.ts",
+    "target": "world",
+    "options": {}
+  }
+]

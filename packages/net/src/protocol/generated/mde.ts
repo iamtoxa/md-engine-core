@@ -5,6 +5,7 @@
 export { Body } from './mde/body.js';
 export { ClientHello } from './mde/client-hello.js';
 export { ClientInput } from './mde/client-input.js';
+export { Command } from './mde/command.js';
 export { EntityId } from './mde/entity-id.js';
 export { EntitySnapshot } from './mde/entity-snapshot.js';
 export { Envelope } from './mde/envelope.js';

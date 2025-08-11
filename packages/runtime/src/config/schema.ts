@@ -2,6 +2,13 @@ import { z } from "zod";
 
 export const EnvSchema = z.enum(["dev", "prod", "test"]);
 
+export const ModuleSchema = z.object({
+  name: z.string(),
+  entry: z.string(),
+  target: z.enum(["gateway", "world", "job", "all"]).default("all"),
+  options: z.record(z.any()).default({}),
+});
+
 export const ConfigSchema = z.object({
   env: EnvSchema,
 
@@ -90,6 +97,10 @@ export const ConfigSchema = z.object({
       consecutiveTicks: z.number().int().positive(),
     }),
   }),
+
+  // Новое: модули
+  modules: z.array(ModuleSchema).default([]),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+export type ModuleConfig = z.infer<typeof ModuleSchema>;
