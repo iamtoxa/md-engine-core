@@ -1,61 +1,46 @@
-@iamtoxa/md-engine-core
+# @iamtoxa/md-engine-core
 
-Высокопроизводительное ядро многопользовательского игрового сервера на Bun + TypeScript: ECS, многопоточность (Workers), SharedArrayBuffer/Atomics, бинарный протокол. Проект открытый и расширяемый.
+Высокопроизводительное ядро многопользовательского игрового сервера на Bun + TypeScript: ECS, многопоточность (Workers), SharedArrayBuffer/Atomics, бинарный протокол.
+Проект открытый и расширяемый.
 
-
-Статус: ранняя инициализация репозитория (этап 0: мета, туллинг, стандарты).
-
+**Текущий статус: ранняя инициализация репозитория**
 
 Лицензия: Apache-2.0
+
 Основной язык документации: русский
+
 Ветка по умолчанию: main
 
-Цели
-
+# Цели
 
 Низкая задержка и стабильные p99.
 Простая и детерминированная архитектура: “одна зона = один воркер”.
-Расширяемость: собственное ECS, протокол на FlatBuffers, модульные подсистемы.
+Расширяемость: собственное ECS, протокол на FlatBuffers, модульные системы, компоненты и сообщения.
 Кроссплатформенность: Windows/macOS/Linux.
 
-Требования
+# Требования
+
+**Bun** >= 1.2.19
+**Git** >= 2.40
+
+# Быстрый старт
+
+1) Установите Bun: https://bun.sh
+2) Установите зависимости: bun install
+3) Установите git-хуки: bunx lefthook install
+4) Сбилдите протокол: bun run build:protocol
+5) Сбилдите проект: bun run build
 
 
-Bun >= 1.2.19
-Git >= 2.40
+# Структура (план)
 
-Быстрый старт
-
-
-Установите Bun: https://bun.sh
-Установите зависимости: bun install
-Установите git-хуки: bunx lefthook install
-Запустите проверки:
-Форматирование: bun run format:check
-Линт: bun run lint
-Типы: bun run typecheck
-Тесты: bun test
-
-Стандарты
-
-
-SemVer + Keep a Changelog.
-Conventional Commits (feat, fix, perf, refactor, docs, chore, test).
-TS strict, отсутствие лишних аллокаций в горячих путях (с этапа реализации).
-Biome для форматирования и линтинга.
-Lefthook: pre-commit (format, lint, typecheck), pre-push (test).
-
-Структура (план)
-
-
-apps/ — приложения (server и т.д.)
+apps/ — приложения (server, client)
 packages/ — модули (ecs-core, net, runtime, utils, game-kit, data)
-tools/ — генераторы/скрипты (например, протокол)
+tools/ — генераторы/скрипты (протокол)
 docs/ — документация (архитектура, ADR)
 tests/, benchmarks/, load/ — тесты, бенчи, нагрузка
 
-Документация
-
+# Документация
 
 docs/ARCHITECTURE.md — обзор архитектуры (черновик).
 CONTRIBUTING.md — как вносить вклад.
@@ -63,5 +48,5 @@ CODE_OF_CONDUCT.md — кодекс поведения.
 SECURITY.md — как сообщать об уязвимостях.
 CHANGELOG.md — изменения по версиям.
 
-Лицензия
+# Лицензия
 Apache-2.0 © 2025 iamtoxa
